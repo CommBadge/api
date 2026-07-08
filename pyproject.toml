@@ -1,9 +1,0 @@
-[project]
-name = "CommBadge-API"
-version = "0.1.0"
-description = "RESTful API for the CommBadge project"
-readme = "README.md"
-requires-python = ">=3.14"
-dependencies = [
-    "flask>=3.1.3",
-]
