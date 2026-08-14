@@ -1,11 +1,20 @@
+-- NOTE: No v1.0 has been released, so this file is rewritten in place for the
+-- Discord-keyed identity model. Dev/test databases that already ran the old
+-- schema must be dropped before reapplying, since goose only tracks version
+-- numbers, not checksums.
+
+-- +goose Up
+
 CREATE TABLE IF NOT EXISTS users (
-    id            TEXT PRIMARY KEY,
-    login         TEXT NOT NULL UNIQUE,
-    display_name  TEXT NOT NULL,
-    email         TEXT NOT NULL DEFAULT '',
-    avatar_url    TEXT NOT NULL DEFAULT '',
-    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+    id               TEXT PRIMARY KEY,
+    username         TEXT NOT NULL UNIQUE,
+    display_name     TEXT NOT NULL,
+    email            TEXT NOT NULL DEFAULT '',
+    avatar_url       TEXT NOT NULL DEFAULT '',
+    twitch_id        TEXT UNIQUE,
+    twitch_linked_at TIMESTAMPTZ,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS communities (
@@ -68,3 +77,31 @@ CREATE TABLE IF NOT EXISTS user_warnings (
 );
 
 CREATE INDEX IF NOT EXISTS idx_user_warnings_user ON user_warnings(user_id);
+
+CREATE TABLE IF NOT EXISTS notification_subscriptions (
+    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id                 TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    twitch_event_type       TEXT NOT NULL CHECK (twitch_event_type IN ('stream.online', 'stream.offline')),
+    condition               JSONB NOT NULL,
+    twitch_subscription_id  TEXT NOT NULL,
+    status                  TEXT NOT NULL DEFAULT 'enabled' CHECK (status IN ('enabled', 'revoked')),
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notification_subscriptions_active
+    ON notification_subscriptions(user_id, twitch_event_type)
+    WHERE status = 'enabled';
+
+CREATE INDEX IF NOT EXISTS idx_notification_subscriptions_user ON notification_subscriptions(user_id);
+
+-- +goose Down
+
+DROP TABLE IF EXISTS notification_subscriptions;
+DROP TABLE IF EXISTS user_warnings;
+DROP TABLE IF EXISTS ticket_messages;
+DROP TABLE IF EXISTS support_tickets;
+DROP TABLE IF EXISTS platform_admins;
+DROP TABLE IF EXISTS community_members;
+DROP TABLE IF EXISTS communities;
+DROP TABLE IF EXISTS users;

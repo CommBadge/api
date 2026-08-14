@@ -2,8 +2,10 @@ package store
 
 import (
 	"context"
+	"errors"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -79,6 +81,9 @@ func (s *TicketStore) GetByID(ctx context.Context, id string) (*SupportTicket, e
 	t := &SupportTicket{}
 	err := row.Scan(&t.ID, &t.UserID, &t.Subject, &t.Body, &t.Status, &t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	return t, nil

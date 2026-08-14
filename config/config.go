@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"strconv"
 	"strings"
@@ -8,29 +9,38 @@ import (
 )
 
 type Config struct {
-	Port              int
-	DatabaseURL       string
-	RedisURL          string
-	TwitchClientID    string
-	TwitchSecret      string
-	RedirectURL       string
-	FrontendURL       string
-	JWTSecret         string
-	SessionTTL        time.Duration
-	TLS               bool
-	TLSCert           string
-	TLSKey            string
-	S3Endpoint        string
-	S3AccessKey       string
-	S3SecretKey       string
-	S3Bucket          string
-	S3Region          string
-	S3UseSSL          bool
-	CORSOrigins       []string
-	RateLimitRPS      int
-	RateLimitBurst    int
-	MaintenanceFile   string
-	Admins            []string
+	Port               int
+	DatabaseURL        string
+	RedisURL           string
+	DiscordClientID    string
+	DiscordSecret      string
+	DiscordBaseURL     string
+	TwitchClientID     string
+	TwitchSecret       string
+	TwitchRedirectURL  string
+	TwitchOAuthBaseURL string
+	TwitchHelixBaseURL string
+	EventSubCallback   string
+	EventSubSecret     string
+	RedirectURL        string
+	FrontendURL        string
+	JWTSecret          string
+	SessionTTL         time.Duration
+	TLS                bool
+	TLSCert            string
+	TLSKey             string
+	S3Endpoint         string
+	S3AccessKey        string
+	S3SecretKey        string
+	S3Bucket           string
+	S3Region           string
+	S3UseSSL           bool
+	CORSOrigins        []string
+	RateLimitRPS       int
+	RateLimitBurst     int
+	MaintenanceFile    string
+	MigrationMode      string
+	Admins             []string
 }
 
 func Load() (*Config, error) {
@@ -69,6 +79,16 @@ func Load() (*Config, error) {
 		maintFile = v
 	}
 
+	migrationMode := "auto"
+	if v := os.Getenv("COMMBADGE_API_MIGRATIONS"); v != "" {
+		switch v {
+		case "auto", "validate", "skip":
+			migrationMode = v
+		default:
+			return nil, errors.New(`COMMBADGE_API_MIGRATIONS must be one of "auto", "validate", or "skip"`)
+		}
+	}
+
 	var corsOrigins []string
 	if v := os.Getenv("COMMBADGE_API_CORS_ORIGINS"); v != "" {
 		corsOrigins = strings.Split(v, ",")
@@ -80,28 +100,44 @@ func Load() (*Config, error) {
 	}
 
 	return &Config{
-		Port:            port,
-		DatabaseURL:     os.Getenv("COMMBADGE_API_DATABASE_URL"),
-		RedisURL:        os.Getenv("COMMBADGE_API_REDIS_URL"),
-		TwitchClientID:  os.Getenv("COMMBADGE_API_TWITCH_CLIENT_ID"),
-		TwitchSecret:    os.Getenv("COMMBADGE_API_TWITCH_CLIENT_SECRET"),
-		RedirectURL:     os.Getenv("COMMBADGE_API_REDIRECT_URL"),
-		FrontendURL:     os.Getenv("COMMBADGE_API_FRONTEND_URL"),
-		JWTSecret:       os.Getenv("COMMBADGE_API_JWT_SECRET"),
-		SessionTTL:      sessionTTL,
-		TLS:             os.Getenv("COMMBADGE_API_TLS") == "true",
-		TLSCert:         os.Getenv("COMMBADGE_API_CERT"),
-		TLSKey:          os.Getenv("COMMBADGE_API_KEY"),
-		S3Endpoint:      os.Getenv("COMMBADGE_API_S3_ENDPOINT"),
-		S3AccessKey:     os.Getenv("COMMBADGE_API_S3_ACCESS_KEY"),
-		S3SecretKey:     os.Getenv("COMMBADGE_API_S3_SECRET_KEY"),
-		S3Bucket:        os.Getenv("COMMBADGE_API_S3_BUCKET"),
-		S3Region:        os.Getenv("COMMBADGE_API_S3_REGION"),
-		S3UseSSL:        os.Getenv("COMMBADGE_API_S3_USE_SSL") == "true",
-		CORSOrigins:     corsOrigins,
-		RateLimitRPS:    rps,
-		RateLimitBurst:  burst,
-		MaintenanceFile: maintFile,
-		Admins:          admins,
+		Port:               port,
+		DatabaseURL:        os.Getenv("COMMBADGE_API_DATABASE_URL"),
+		RedisURL:           os.Getenv("COMMBADGE_API_REDIS_URL"),
+		DiscordClientID:    os.Getenv("COMMBADGE_API_DISCORD_CLIENT_ID"),
+		DiscordSecret:      os.Getenv("COMMBADGE_API_DISCORD_CLIENT_SECRET"),
+		DiscordBaseURL:     getenv("COMMBADGE_API_DISCORD_BASE_URL", "https://discord.com"),
+		TwitchClientID:     os.Getenv("COMMBADGE_API_TWITCH_CLIENT_ID"),
+		TwitchSecret:       os.Getenv("COMMBADGE_API_TWITCH_CLIENT_SECRET"),
+		TwitchRedirectURL:  os.Getenv("COMMBADGE_API_TWITCH_REDIRECT_URL"),
+		TwitchOAuthBaseURL: getenv("COMMBADGE_API_TWITCH_OAUTH_BASE_URL", "https://id.twitch.tv"),
+		TwitchHelixBaseURL: getenv("COMMBADGE_API_TWITCH_HELIX_BASE_URL", "https://api.twitch.tv"),
+		EventSubCallback:   os.Getenv("COMMBADGE_API_EVENTSUB_CALLBACK_URL"),
+		EventSubSecret:     os.Getenv("COMMBADGE_API_EVENTSUB_SECRET"),
+		RedirectURL:        os.Getenv("COMMBADGE_API_REDIRECT_URL"),
+		FrontendURL:        os.Getenv("COMMBADGE_API_FRONTEND_URL"),
+		JWTSecret:          os.Getenv("COMMBADGE_API_JWT_SECRET"),
+		SessionTTL:         sessionTTL,
+		TLS:                os.Getenv("COMMBADGE_API_TLS") == "true",
+		TLSCert:            os.Getenv("COMMBADGE_API_CERT"),
+		TLSKey:             os.Getenv("COMMBADGE_API_KEY"),
+		S3Endpoint:         os.Getenv("COMMBADGE_API_S3_ENDPOINT"),
+		S3AccessKey:        os.Getenv("COMMBADGE_API_S3_ACCESS_KEY"),
+		S3SecretKey:        os.Getenv("COMMBADGE_API_S3_SECRET_KEY"),
+		S3Bucket:           os.Getenv("COMMBADGE_API_S3_BUCKET"),
+		S3Region:           os.Getenv("COMMBADGE_API_S3_REGION"),
+		S3UseSSL:           os.Getenv("COMMBADGE_API_S3_USE_SSL") == "true",
+		CORSOrigins:        corsOrigins,
+		RateLimitRPS:       rps,
+		RateLimitBurst:     burst,
+		MaintenanceFile:    maintFile,
+		MigrationMode:      migrationMode,
+		Admins:             admins,
 	}, nil
+}
+
+func getenv(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }

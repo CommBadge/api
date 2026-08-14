@@ -10,10 +10,10 @@ import (
 )
 
 type S3Client struct {
-	client    *minio.Client
-	endpoint  string
-	bucket    string
-	useSSL    bool
+	client   *minio.Client
+	endpoint string
+	bucket   string
+	useSSL   bool
 }
 
 func NewS3Client(endpoint, accessKey, secretKey, bucket, region string, useSSL bool) (*S3Client, error) {

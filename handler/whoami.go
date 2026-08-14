@@ -12,12 +12,14 @@ type WhoamiHandler struct {
 }
 
 type whoamiResponse struct {
-	ID          string           `json:"id"`
-	Login       string           `json:"login"`
-	DisplayName string           `json:"display_name"`
-	Email       string           `json:"email"`
-	AvatarURL   string           `json:"avatar_url"`
-	Communities []communityBrief `json:"communities"`
+	ID              string           `json:"id"`
+	Username        string           `json:"username"`
+	DisplayName     string           `json:"display_name"`
+	Email           string           `json:"email"`
+	AvatarURL       string           `json:"avatar_url"`
+	TwitchLinked    bool             `json:"twitch_linked"`
+	ShoutoutTemplate string          `json:"shoutout_template"`
+	Communities     []communityBrief `json:"communities"`
 }
 
 type communityBrief struct {
@@ -52,12 +54,14 @@ func (h *WhoamiHandler) Whoami(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := whoamiResponse{
-		ID:          user.ID,
-		Login:       user.Login,
-		DisplayName: user.DisplayName,
-		Email:       user.Email,
-		AvatarURL:   user.AvatarURL,
-		Communities: make([]communityBrief, 0, len(communities)),
+		ID:               user.ID,
+		Username:         user.Username,
+		DisplayName:      user.DisplayName,
+		Email:            user.Email,
+		AvatarURL:        user.AvatarURL,
+		TwitchLinked:     user.TwitchID != "",
+		ShoutoutTemplate: user.ShoutoutTemplate,
+		Communities:      make([]communityBrief, 0, len(communities)),
 	}
 	for _, c := range communities {
 		resp.Communities = append(resp.Communities, communityBrief{

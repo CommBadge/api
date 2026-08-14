@@ -27,11 +27,28 @@ func (s *AdminStore) IsAdmin(ctx context.Context, userID string) (bool, error) {
 
 func (s *AdminStore) SeedAdmins(ctx context.Context, adminIDs []string) error {
 	for _, id := range adminIDs {
-		_, err := s.pool.Exec(ctx, `
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		// platform_admins.user_id references users(id); ensure the row exists
+		// so a fresh database can be bootstrapped before any login. A real
+		// login later upserts the full profile.
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO users (id, username, display_name) VALUES ($1, $1, $1)
+			ON CONFLICT (id) DO NOTHING
+		`, id); err != nil {
+			_ = tx.Rollback(ctx)
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
 			INSERT INTO platform_admins (user_id) VALUES ($1)
 			ON CONFLICT (user_id) DO NOTHING
-		`, id)
-		if err != nil {
+		`, id); err != nil {
+			_ = tx.Rollback(ctx)
+			return err
+		}
+		if err := tx.Commit(ctx); err != nil {
 			return err
 		}
 	}

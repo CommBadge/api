@@ -20,15 +20,15 @@ type CommunityHandler struct {
 }
 
 type communityDetail struct {
-	ID          string               `json:"id"`
-	Name        string               `json:"name"`
-	Description string               `json:"description"`
-	LogoURL     string               `json:"logo_url"`
-	JoinLinkID  string               `json:"join_link_id"`
-	Owner       *memberBrief         `json:"owner"`
-	Moderators  []memberBrief        `json:"moderators"`
-	Members     []memberBrief        `json:"members"`
-	CreatedAt   string               `json:"created_at"`
+	ID          string        `json:"id"`
+	Name        string        `json:"name"`
+	Description string        `json:"description"`
+	LogoURL     string        `json:"logo_url"`
+	JoinLinkID  string        `json:"join_link_id"`
+	Owner       *memberBrief  `json:"owner"`
+	Moderators  []memberBrief `json:"moderators"`
+	Members     []memberBrief `json:"members"`
+	CreatedAt   string        `json:"created_at"`
 }
 
 type memberBrief struct {

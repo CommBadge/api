@@ -11,13 +11,11 @@ import (
 )
 
 type Session struct {
-	UserID         string `json:"user_id"`
-	Login          string `json:"login"`
-	DisplayName    string `json:"display_name"`
-	Email          string `json:"email"`
-	AvatarURL      string `json:"avatar_url"`
-	TwitchToken    string `json:"twitch_token"`
-	TwitchRefresh  string `json:"twitch_refresh"`
+	UserID      string `json:"user_id"`
+	Username    string `json:"username"`
+	DisplayName string `json:"display_name"`
+	Email       string `json:"email"`
+	AvatarURL   string `json:"avatar_url"`
 }
 
 type Store struct {

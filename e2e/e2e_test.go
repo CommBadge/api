@@ -13,8 +13,8 @@ import (
 )
 
 var (
-	baseURL   string
-	httpCli   *http.Client
+	baseURL string
+	httpCli *http.Client
 )
 
 func setup() {
@@ -22,7 +22,12 @@ func setup() {
 	if baseURL == "" {
 		baseURL = "http://localhost:8080"
 	}
-	httpCli = &http.Client{Timeout: 15 * time.Second}
+	httpCli = &http.Client{
+		Timeout: 15 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 }
 
 func request(method, path, body string) (*http.Response, error) {
@@ -91,8 +96,8 @@ func TestE2E_AuthRedirect(t *testing.T) {
 		t.Fatalf("expected 302, got %d", resp.StatusCode)
 	}
 	loc := resp.Header.Get("Location")
-	if !strings.Contains(loc, "id.twitch.tv") {
-		t.Fatalf("expected twitch redirect, got %s", loc)
+	if !strings.Contains(loc, "discord.com/oauth2/authorize") {
+		t.Fatalf("expected discord redirect, got %s", loc)
 	}
 }
 
@@ -135,7 +140,7 @@ func TestE2E_NotFound(t *testing.T) {
 
 func TestE2E_AdminTicketCount(t *testing.T) {
 	setup()
-	resp, err := request("GET", "/admin/tickets/count", "")
+	resp, err := request("GET", "/api/admin/tickets/count", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,13 +164,13 @@ func TestE2E_SetupAsAdmin(t *testing.T) {
 	// This test always passes and logs the environment.
 	setup()
 
-	clientID := os.Getenv("COMMBADGE_API_TWITCH_CLIENT_ID")
+	clientID := os.Getenv("COMMBADGE_API_DISCORD_CLIENT_ID")
 	if clientID == "" {
 		clientID = "(not set)"
 	}
 
 	t.Logf("E2E test against: %s", baseURL)
-	t.Logf("Twitch client ID: %s", clientID)
+	t.Logf("Discord client ID: %s", clientID)
 
 	fmt.Printf("To run e2e tests against a Kubernetes cluster:\n")
 	fmt.Printf("  export COMMBADGE_E2E_BASE_URL=https://api.yourdomain.com\n")

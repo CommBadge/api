@@ -24,6 +24,9 @@ type Community struct {
 	JoinLinkID  string    `json:"join_link_id"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
+
+	DiscordGuildID string `json:"discord_guild_id,omitempty"`
+	LiveChannelID  string `json:"live_channel_id,omitempty"`
 }
 
 type CommunityMember struct {
@@ -182,6 +185,13 @@ func (s *CommunityStore) GetMembers(ctx context.Context, communityID string) ([]
 		members = append(members, m)
 	}
 	return members, nil
+}
+
+func (s *CommunityStore) SetDiscordConfig(ctx context.Context, id, guildID, liveChannelID string) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE communities SET discord_guild_id = $1, live_channel_id = $2, updated_at = now() WHERE id = $3
+	`, guildID, liveChannelID, id)
+	return err
 }
 
 func (s *CommunityStore) RegenerateJoinLink(ctx context.Context, id string) (string, error) {

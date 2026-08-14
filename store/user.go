@@ -9,13 +9,18 @@ import (
 )
 
 type User struct {
-	ID          string    `json:"id"`
-	Login       string    `json:"login"`
-	DisplayName string    `json:"display_name"`
-	Email       string    `json:"email"`
-	AvatarURL   string    `json:"avatar_url"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID             string     `json:"id"`
+	Username       string     `json:"username"`
+	DisplayName    string     `json:"display_name"`
+	Email          string     `json:"email"`
+	AvatarURL      string     `json:"avatar_url"`
+	TwitchID       string     `json:"twitch_id,omitempty"`
+	TwitchLinkedAt *time.Time `json:"twitch_linked_at,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+
+	NotificationDiscordChannelID string `json:"notification_discord_channel_id,omitempty"`
+	ShoutoutTemplate             string `json:"shoutout_template"`
 }
 
 type UserAdminView struct {
@@ -42,31 +47,77 @@ func NewUserStore(pool *pgxpool.Pool) *UserStore {
 	return &UserStore{pool: pool}
 }
 
+const userColumns = `id, username, display_name, email, avatar_url, twitch_id, twitch_linked_at, created_at, updated_at, shoutout_template`
+
 func (s *UserStore) UpsertUser(ctx context.Context, user *User) error {
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO users (id, login, display_name, email, avatar_url)
+		INSERT INTO users (id, username, display_name, email, avatar_url)
 		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (id) DO UPDATE SET
-			login = EXCLUDED.login,
+			username = EXCLUDED.username,
 			display_name = EXCLUDED.display_name,
 			email = EXCLUDED.email,
 			avatar_url = EXCLUDED.avatar_url,
 			updated_at = now()
-	`, user.ID, user.Login, user.DisplayName, user.Email, user.AvatarURL)
+	`, user.ID, user.Username, user.DisplayName, user.Email, user.AvatarURL)
 	return err
 }
 
 func (s *UserStore) GetUserByID(ctx context.Context, id string) (*User, error) {
 	row := s.pool.QueryRow(ctx, `
-		SELECT id, login, display_name, email, avatar_url, created_at, updated_at
+		SELECT `+userColumns+`
 		FROM users WHERE id = $1
 	`, id)
-	u := &User{}
-	err := row.Scan(&u.ID, &u.Login, &u.DisplayName, &u.Email, &u.AvatarURL, &u.CreatedAt, &u.UpdatedAt)
+	u, err := scanUser(row)
 	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
 		return nil, err
 	}
 	return u, nil
+}
+
+func (s *UserStore) SaveTwitchLink(ctx context.Context, userID, twitchID string) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE users SET twitch_id = $1, twitch_linked_at = now(), updated_at = now() WHERE id = $2
+	`, twitchID, userID)
+	return err
+}
+
+func (s *UserStore) GetTwitchID(ctx context.Context, userID string) (string, error) {
+	var twitchID string
+	err := s.pool.QueryRow(ctx, `
+		SELECT COALESCE(twitch_id, '') FROM users WHERE id = $1
+	`, userID).Scan(&twitchID)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return "", nil
+		}
+		return "", err
+	}
+	return twitchID, nil
+}
+
+func (s *UserStore) ClearTwitchLink(ctx context.Context, userID string) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE users SET twitch_id = NULL, twitch_linked_at = NULL, updated_at = now() WHERE id = $1
+	`, userID)
+	return err
+}
+
+func (s *UserStore) SetNotificationChannel(ctx context.Context, userID, channelID string) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE users SET notification_discord_channel_id = $1, updated_at = now() WHERE id = $2
+	`, channelID, userID)
+	return err
+}
+
+func (s *UserStore) SetShoutoutTemplate(ctx context.Context, userID, template string) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE users SET shoutout_template = $1, updated_at = now() WHERE id = $2
+	`, template, userID)
+	return err
 }
 
 func (s *UserStore) IsBanned(ctx context.Context, userID string) (bool, error) {
@@ -83,7 +134,7 @@ func (s *UserStore) IsBanned(ctx context.Context, userID string) (bool, error) {
 
 func (s *UserStore) ListUsers(ctx context.Context, limit, offset int) ([]UserAdminView, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, login, display_name, email, avatar_url, created_at, updated_at,
+		SELECT `+userColumns+`,
 		       warnings, banned, banned_at, ban_reason
 		FROM users
 		ORDER BY created_at DESC
@@ -96,22 +147,21 @@ func (s *UserStore) ListUsers(ctx context.Context, limit, offset int) ([]UserAdm
 
 	var users []UserAdminView
 	for rows.Next() {
-		var u UserAdminView
-		if err := rows.Scan(&u.ID, &u.Login, &u.DisplayName, &u.Email, &u.AvatarURL, &u.CreatedAt, &u.UpdatedAt,
-			&u.Warnings, &u.Banned, &u.BannedAt, &u.BanReason); err != nil {
+		u, err := scanUserAdminView(rows)
+		if err != nil {
 			return nil, err
 		}
-		users = append(users, u)
+		users = append(users, *u)
 	}
 	return users, nil
 }
 
 func (s *UserStore) SearchUsers(ctx context.Context, query string, limit int) ([]UserAdminView, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, login, display_name, email, avatar_url, created_at, updated_at,
+		SELECT `+userColumns+`,
 		       warnings, banned, banned_at, ban_reason
 		FROM users
-		WHERE login ILIKE $1 OR display_name ILIKE $1
+		WHERE username ILIKE $1 OR display_name ILIKE $1
 		ORDER BY display_name
 		LIMIT $2
 	`, "%"+query+"%", limit)
@@ -122,12 +172,11 @@ func (s *UserStore) SearchUsers(ctx context.Context, query string, limit int) ([
 
 	var users []UserAdminView
 	for rows.Next() {
-		var u UserAdminView
-		if err := rows.Scan(&u.ID, &u.Login, &u.DisplayName, &u.Email, &u.AvatarURL, &u.CreatedAt, &u.UpdatedAt,
-			&u.Warnings, &u.Banned, &u.BannedAt, &u.BanReason); err != nil {
+		u, err := scanUserAdminView(rows)
+		if err != nil {
 			return nil, err
 		}
-		users = append(users, u)
+		users = append(users, *u)
 	}
 	return users, nil
 }
@@ -189,4 +238,37 @@ func (s *UserStore) UnbanUser(ctx context.Context, userID string) error {
 		UPDATE users SET banned = false, ban_reason = '', banned_at = NULL, updated_at = now() WHERE id = $1
 	`, userID)
 	return err
+}
+
+type rowScanner interface {
+	Scan(dest ...interface{}) error
+}
+
+func scanUser(row rowScanner) (*User, error) {
+	var twitchID *string
+	u := &User{}
+	err := row.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Email, &u.AvatarURL,
+		&twitchID, &u.TwitchLinkedAt, &u.CreatedAt, &u.UpdatedAt, &u.ShoutoutTemplate)
+	if err != nil {
+		return nil, err
+	}
+	if twitchID != nil {
+		u.TwitchID = *twitchID
+	}
+	return u, nil
+}
+
+func scanUserAdminView(row rowScanner) (*UserAdminView, error) {
+	var twitchID *string
+	u := &UserAdminView{}
+	err := row.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Email, &u.AvatarURL,
+		&twitchID, &u.TwitchLinkedAt, &u.CreatedAt, &u.UpdatedAt, &u.ShoutoutTemplate,
+		&u.Warnings, &u.Banned, &u.BannedAt, &u.BanReason)
+	if err != nil {
+		return nil, err
+	}
+	if twitchID != nil {
+		u.TwitchID = *twitchID
+	}
+	return u, nil
 }

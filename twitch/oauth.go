@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -15,11 +16,14 @@ type Config struct {
 	ClientID     string
 	ClientSecret string
 	RedirectURL  string
+	OAuthURL     string
+	HelixURL     string
 }
 
 type TokenResponse struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
+	ExpiresIn    int    `json:"expires_in"`
 	IDToken      string `json:"id_token,omitempty"`
 }
 
@@ -38,9 +42,19 @@ type helixResponse struct {
 type Client struct {
 	cfg     *Config
 	httpCli *http.Client
+
+	mu              sync.Mutex
+	appToken        string
+	appTokenExpires time.Time
 }
 
 func NewClient(cfg *Config) *Client {
+	if cfg.OAuthURL == "" {
+		cfg.OAuthURL = "https://id.twitch.tv"
+	}
+	if cfg.HelixURL == "" {
+		cfg.HelixURL = "https://api.twitch.tv"
+	}
 	return &Client{cfg: cfg, httpCli: &http.Client{Timeout: 10 * time.Second}}
 }
 
@@ -52,7 +66,7 @@ func (c *Client) AuthURL(state string) string {
 	v.Set("scope", "openid user:read:email")
 	v.Set("state", state)
 	v.Set("nonce", state)
-	return "https://id.twitch.tv/oauth2/authorize?" + v.Encode()
+	return c.cfg.OAuthURL + "/oauth2/authorize?" + v.Encode()
 }
 
 func (c *Client) Exchange(ctx context.Context, code string) (*TokenResponse, error) {
@@ -63,7 +77,7 @@ func (c *Client) Exchange(ctx context.Context, code string) (*TokenResponse, err
 	v.Set("grant_type", "authorization_code")
 	v.Set("redirect_uri", c.cfg.RedirectURL)
 
-	req, err := http.NewRequestWithContext(ctx, "POST", "https://id.twitch.tv/oauth2/token", strings.NewReader(v.Encode()))
+	req, err := http.NewRequestWithContext(ctx, "POST", c.cfg.OAuthURL+"/oauth2/token", strings.NewReader(v.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("NewRequest: %w", err)
 	}
@@ -91,7 +105,7 @@ func (c *Client) Exchange(ctx context.Context, code string) (*TokenResponse, err
 }
 
 func (c *Client) GetUser(ctx context.Context, accessToken string) (*TwitchUser, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", "https://api.twitch.tv/helix/users", nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", c.cfg.HelixURL+"/helix/users", nil)
 	if err != nil {
 		return nil, fmt.Errorf("NewRequest: %w", err)
 	}
@@ -120,28 +134,4 @@ func (c *Client) GetUser(ctx context.Context, accessToken string) (*TwitchUser, 
 		return nil, fmt.Errorf("no user data returned")
 	}
 	return &hr.Data[0], nil
-}
-
-func (c *Client) RevokeToken(ctx context.Context, accessToken string) error {
-	v := url.Values{}
-	v.Set("client_id", c.cfg.ClientID)
-	v.Set("token", accessToken)
-
-	req, err := http.NewRequestWithContext(ctx, "POST", "https://id.twitch.tv/oauth2/revoke", strings.NewReader(v.Encode()))
-	if err != nil {
-		return fmt.Errorf("NewRequest: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	resp, err := c.httpCli.Do(req)
-	if err != nil {
-		return fmt.Errorf("Do: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("revoke failed (status %d): %s", resp.StatusCode, string(body))
-	}
-	return nil
 }

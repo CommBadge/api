@@ -10,11 +10,11 @@ import (
 )
 
 type MockUserStore struct {
-	mu           sync.Mutex
-	Users        map[string]*store.User
-	AdminViews   map[string]*store.UserAdminView
-	Warnings     map[string][]store.UserWarning
-	Err          error
+	mu         sync.Mutex
+	Users      map[string]*store.User
+	AdminViews map[string]*store.UserAdminView
+	Warnings   map[string][]store.UserWarning
+	Err        error
 }
 
 func NewMockUserStore() *MockUserStore {
@@ -42,6 +42,70 @@ func (m *MockUserStore) GetUserByID(ctx context.Context, id string) (*store.User
 		return nil, m.Err
 	}
 	return m.Users[id], nil
+}
+
+func (m *MockUserStore) SaveTwitchLink(ctx context.Context, userID, twitchID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.Err != nil {
+		return m.Err
+	}
+	if u, ok := m.Users[userID]; ok {
+		u.TwitchID = twitchID
+		now := time.Now()
+		u.TwitchLinkedAt = &now
+	}
+	return nil
+}
+
+func (m *MockUserStore) GetTwitchID(ctx context.Context, userID string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.Err != nil {
+		return "", m.Err
+	}
+	u, ok := m.Users[userID]
+	if !ok {
+		return "", nil
+	}
+	return u.TwitchID, nil
+}
+
+func (m *MockUserStore) ClearTwitchLink(ctx context.Context, userID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.Err != nil {
+		return m.Err
+	}
+	if u, ok := m.Users[userID]; ok {
+		u.TwitchID = ""
+		u.TwitchLinkedAt = nil
+	}
+	return nil
+}
+
+func (m *MockUserStore) SetNotificationChannel(ctx context.Context, userID, channelID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.Err != nil {
+		return m.Err
+	}
+	if u, ok := m.Users[userID]; ok {
+		u.NotificationDiscordChannelID = channelID
+	}
+	return nil
+}
+
+func (m *MockUserStore) SetShoutoutTemplate(ctx context.Context, userID, template string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.Err != nil {
+		return m.Err
+	}
+	if u, ok := m.Users[userID]; ok {
+		u.ShoutoutTemplate = template
+	}
+	return nil
 }
 
 func (m *MockUserStore) IsBanned(ctx context.Context, userID string) (bool, error) {
@@ -78,7 +142,7 @@ func (m *MockUserStore) SearchUsers(ctx context.Context, query string, limit int
 	}
 	var result []store.UserAdminView
 	for _, v := range m.AdminViews {
-		if v.Login == query || v.DisplayName == query {
+		if v.Username == query || v.DisplayName == query {
 			result = append(result, *v)
 		}
 	}
@@ -145,11 +209,11 @@ func (m *MockUserStore) UnbanUser(ctx context.Context, userID string) error {
 }
 
 type MockCommunityStore struct {
-	mu           sync.Mutex
-	Communities  map[string]*store.Community
-	Members      map[string][]store.CommunityMember
-	MemberRoles  map[string]string
-	Err          error
+	mu          sync.Mutex
+	Communities map[string]*store.Community
+	Members     map[string][]store.CommunityMember
+	MemberRoles map[string]string
+	Err         error
 }
 
 func NewMockCommunityStore() *MockCommunityStore {
@@ -313,6 +377,19 @@ func (m *MockCommunityStore) TransferOwnership(ctx context.Context, communityID,
 	return nil
 }
 
+func (m *MockCommunityStore) SetDiscordConfig(ctx context.Context, id, guildID, liveChannelID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.Err != nil {
+		return m.Err
+	}
+	if c, ok := m.Communities[id]; ok {
+		c.DiscordGuildID = guildID
+		c.LiveChannelID = liveChannelID
+	}
+	return nil
+}
+
 func (m *MockCommunityStore) RegenerateJoinLink(ctx context.Context, id string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -470,9 +547,9 @@ func (m *MockTicketStore) AdminUpdateStatus(ctx context.Context, id, status stri
 }
 
 type MockAdminStore struct {
-	mu      sync.Mutex
-	Admins  map[string]bool
-	Err     error
+	mu     sync.Mutex
+	Admins map[string]bool
+	Err    error
 }
 
 func NewMockAdminStore() *MockAdminStore {
@@ -505,3 +582,102 @@ type MockDBPinger struct {
 }
 
 func (m *MockDBPinger) Ping(ctx context.Context) error { return m.Err }
+
+type MockNotificationStore struct {
+	mu     sync.Mutex
+	Subs   map[string]*store.NotificationSubscription
+	Err    error
+	nextID int
+}
+
+func NewMockNotificationStore() *MockNotificationStore {
+	return &MockNotificationStore{Subs: make(map[string]*store.NotificationSubscription)}
+}
+
+func (m *MockNotificationStore) Create(ctx context.Context, userID, eventType string, condition map[string]string, twitchSubscriptionID string) (*store.NotificationSubscription, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.Err != nil {
+		return nil, m.Err
+	}
+	m.nextID++
+	id := fmt.Sprintf("sub-%d", m.nextID)
+	sub := &store.NotificationSubscription{
+		ID:                   id,
+		UserID:               userID,
+		TwitchEventType:      eventType,
+		Condition:            condition,
+		TwitchSubscriptionID: twitchSubscriptionID,
+		Status:               store.SubscriptionEnabled,
+		CreatedAt:            time.Now(),
+		UpdatedAt:            time.Now(),
+	}
+	m.Subs[id] = sub
+	return sub, nil
+}
+
+func (m *MockNotificationStore) GetByID(ctx context.Context, id string) (*store.NotificationSubscription, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.Err != nil {
+		return nil, m.Err
+	}
+	return m.Subs[id], nil
+}
+
+func (m *MockNotificationStore) HasActive(ctx context.Context, userID, eventType string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.Err != nil {
+		return false, m.Err
+	}
+	for _, s := range m.Subs {
+		if s.UserID == userID && s.TwitchEventType == eventType && s.Status == store.SubscriptionEnabled {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (m *MockNotificationStore) ListActiveByUser(ctx context.Context, userID string) ([]store.NotificationSubscription, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.Err != nil {
+		return nil, m.Err
+	}
+	var result []store.NotificationSubscription
+	for _, s := range m.Subs {
+		if s.UserID == userID && s.Status == store.SubscriptionEnabled {
+			result = append(result, *s)
+		}
+	}
+	return result, nil
+}
+
+func (m *MockNotificationStore) MarkRevoked(ctx context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.Err != nil {
+		return m.Err
+	}
+	if s, ok := m.Subs[id]; ok {
+		s.Status = store.SubscriptionRevoked
+	}
+	return nil
+}
+
+func (m *MockNotificationStore) RevokeAllByUser(ctx context.Context, userID string) ([]store.NotificationSubscription, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.Err != nil {
+		return nil, m.Err
+	}
+	var result []store.NotificationSubscription
+	for _, s := range m.Subs {
+		if s.UserID == userID && s.Status == store.SubscriptionEnabled {
+			s.Status = store.SubscriptionRevoked
+			result = append(result, *s)
+		}
+	}
+	return result, nil
+}

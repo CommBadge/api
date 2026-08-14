@@ -6,17 +6,19 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
+
+	"kronus.dev/commbadge_api/migrations"
 )
 
 var (
 	pgPool    *pgxpool.Pool
+	pgDSN     string
+	redisURL  string
 	cleanupFn func()
 )
 
@@ -37,17 +39,18 @@ func setup(ctx context.Context) error {
 		rdC.Terminate(ctx)
 	}
 
-	dsn := fmt.Sprintf("postgres://commbadge:commbadge@%s:%s/commbadge?sslmode=disable", pgHost, pgPort)
-	pool, err := pgxpool.New(ctx, dsn)
+	pgDSN = fmt.Sprintf("postgres://commbadge:commbadge@%s:%s/commbadge?sslmode=disable", pgHost, pgPort)
+	version, applied, err := migrations.Apply(ctx, pgDSN)
+	if err != nil {
+		cleanupFn()
+		return fmt.Errorf("migrations: %w", err)
+	}
+	log.Printf("migrations applied, version=%d applied=%d", version, applied)
+
+	pool, err := pgxpool.New(ctx, pgDSN)
 	if err != nil {
 		cleanupFn()
 		return fmt.Errorf("pgxpool: %w", err)
-	}
-
-	if err := runMigrations(ctx, pool); err != nil {
-		pool.Close()
-		cleanupFn()
-		return fmt.Errorf("migrations: %w", err)
 	}
 
 	// Verify connectivity
@@ -58,6 +61,7 @@ func setup(ctx context.Context) error {
 	}
 
 	pgPool = pool
+	redisURL = fmt.Sprintf("redis://%s:%s", rdHost, rdPort)
 
 	log.Printf("Postgres ready at %s:%s, Redis ready at %s:%s", pgHost, pgPort, rdHost, rdPort)
 	return nil
@@ -124,18 +128,4 @@ func startRedis(ctx context.Context) (testcontainers.Container, string, string, 
 		return nil, "", "", err
 	}
 	return c, host, port.Port(), nil
-}
-
-func runMigrations(ctx context.Context, pool *pgxpool.Pool) error {
-	migrationPath := filepath.Join("..", "migrations", "001_init.sql")
-	data, err := os.ReadFile(migrationPath)
-	if err != nil {
-		return fmt.Errorf("read migration: %w", err)
-	}
-	_, err = pool.Exec(ctx, string(data))
-	if err != nil {
-		return fmt.Errorf("exec migration: %w", err)
-	}
-	log.Println("migrations applied")
-	return nil
 }
