@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type User struct {
@@ -40,10 +39,10 @@ type UserWarning struct {
 }
 
 type UserStore struct {
-	pool *pgxpool.Pool
+	pool DBTX
 }
 
-func NewUserStore(pool *pgxpool.Pool) *UserStore {
+func NewUserStore(pool DBTX) *UserStore {
 	return &UserStore{pool: pool}
 }
 

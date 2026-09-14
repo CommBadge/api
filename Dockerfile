@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM golang:1.26-alpine AS build
+FROM golang:1.26-alpine@sha256:70b46548e42db77e0966aaf3619fd068734dc6c77584d526b91126504fd95816 AS build
 
 RUN apk add --no-cache ca-certificates \
     && echo "nobody:x:65534:65534:nobody:/nonexistent:/sbin/nologin" > /etc/passwd \

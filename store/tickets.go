@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type SupportTicket struct {
@@ -29,10 +28,10 @@ type TicketMessage struct {
 }
 
 type TicketStore struct {
-	pool *pgxpool.Pool
+	pool DBTX
 }
 
-func NewTicketStore(pool *pgxpool.Pool) *TicketStore {
+func NewTicketStore(pool DBTX) *TicketStore {
 	return &TicketStore{pool: pool}
 }
 

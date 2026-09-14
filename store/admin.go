@@ -2,15 +2,13 @@ package store
 
 import (
 	"context"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type AdminStore struct {
-	pool *pgxpool.Pool
+	pool DBTX
 }
 
-func NewAdminStore(pool *pgxpool.Pool) *AdminStore {
+func NewAdminStore(pool DBTX) *AdminStore {
 	return &AdminStore{pool: pool}
 }
 

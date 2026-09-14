@@ -1,0 +1,6 @@
+packages:
+  kronus.dev/commbadge_api/handler/contracts:
+    config:
+      all: true
+      dir: handler/contracts/mocks/
+      outpkg: mocks

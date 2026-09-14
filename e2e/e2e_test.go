@@ -73,14 +73,31 @@ func TestE2E_Root(t *testing.T) {
 
 func TestE2E_Metrics(t *testing.T) {
 	setup()
-	resp, err := request("GET", "/metrics", "")
+	req, err := http.NewRequest("GET", baseURL+"/metrics", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, pass := os.Getenv("COMMBADGE_E2E_METRICS_USER"), os.Getenv("COMMBADGE_E2E_METRICS_PASSWORD")
+	if user != "" && pass != "" {
+		req.SetBasicAuth(user, pass)
+	}
+	resp, err := httpCli.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	// /metrics is either disabled (404) or behind Basic auth (401 without
+	// credentials). When credentials are configured, it must serve 200.
+	switch {
+	case user != "" && pass != "":
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200 with metrics credentials, got %d", resp.StatusCode)
+		}
+	case resp.StatusCode != http.StatusOK &&
+		resp.StatusCode != http.StatusUnauthorized &&
+		resp.StatusCode != http.StatusNotFound:
+		t.Fatalf("expected metrics to be disabled or protected, got %d", resp.StatusCode)
 	}
 }
 

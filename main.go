@@ -13,7 +13,7 @@ import (
 
 	"kronus.dev/commbadge_api/config"
 	"kronus.dev/commbadge_api/discord"
-	"kronus.dev/commbadge_api/handler"
+	"kronus.dev/commbadge_api/handler/contracts"
 	"kronus.dev/commbadge_api/internal/app"
 	"kronus.dev/commbadge_api/jwt"
 	"kronus.dev/commbadge_api/migrations"
@@ -84,7 +84,7 @@ func main() {
 	}
 	defer sessions.Close()
 
-	var s3 handler.S3Repository
+	var s3 contracts.S3Repository
 	if cfg.S3Endpoint != "" {
 		c, err := store.NewS3Client(cfg.S3Endpoint, cfg.S3AccessKey, cfg.S3SecretKey, cfg.S3Bucket, cfg.S3Region, cfg.S3UseSSL)
 		if err != nil {

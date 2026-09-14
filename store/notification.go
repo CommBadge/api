@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const (
@@ -26,10 +25,10 @@ type NotificationSubscription struct {
 }
 
 type NotificationStore struct {
-	pool *pgxpool.Pool
+	pool DBTX
 }
 
-func NewNotificationStore(pool *pgxpool.Pool) *NotificationStore {
+func NewNotificationStore(pool DBTX) *NotificationStore {
 	return &NotificationStore{pool: pool}
 }
 

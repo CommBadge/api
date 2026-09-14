@@ -2,6 +2,8 @@ package config
 
 import (
 	"errors"
+	"fmt"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -14,6 +16,7 @@ type Config struct {
 	RedisURL           string
 	DiscordClientID    string
 	DiscordSecret      string
+	DiscordBotToken    string
 	DiscordBaseURL     string
 	TwitchClientID     string
 	TwitchSecret       string
@@ -27,6 +30,7 @@ type Config struct {
 	JWTSecret          string
 	SessionTTL         time.Duration
 	TLS                bool
+	CookieSecure       bool
 	TLSCert            string
 	TLSKey             string
 	S3Endpoint         string
@@ -38,16 +42,19 @@ type Config struct {
 	CORSOrigins        []string
 	RateLimitRPS       int
 	RateLimitBurst     int
+	TrustedProxies     []string
 	MaintenanceFile    string
 	MigrationMode      string
 	Admins             []string
+	MetricsUser        string
+	MetricsPassword    string
 }
 
 func Load() (*Config, error) {
 	portStr := os.Getenv("COMMBADGE_API_PORT")
 	port, err := strconv.Atoi(portStr)
 	if err != nil || port < 1 || port > 65535 {
-		return nil, err
+		return nil, fmt.Errorf("invalid COMMBADGE_API_PORT %q: must be an integer between 1 and 65535", portStr)
 	}
 
 	sessionTTL := 24 * time.Hour
@@ -94,6 +101,37 @@ func Load() (*Config, error) {
 		corsOrigins = strings.Split(v, ",")
 	}
 
+	var trustedProxies []string
+	if v := os.Getenv("COMMBADGE_API_TRUSTED_PROXIES"); v != "" {
+		for _, p := range strings.Split(v, ",") {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			if _, err := netip.ParsePrefix(p); err != nil {
+				return nil, fmt.Errorf("invalid COMMBADGE_API_TRUSTED_PROXIES entry %q: %w", p, err)
+			}
+			trustedProxies = append(trustedProxies, p)
+		}
+	}
+
+	// Secure cookies are the safe default: without TLS the session and
+	// oauth_state cookies would be transmitted in plaintext. Set
+	// COMMBADGE_API_COOKIE_SECURE=false explicitly for local HTTP testing.
+	cookieSecure := true
+	if v := os.Getenv("COMMBADGE_API_COOKIE_SECURE"); v != "" {
+		cookieSecure, err = strconv.ParseBool(v)
+		if err != nil {
+			return nil, fmt.Errorf("invalid COMMBADGE_API_COOKIE_SECURE: %w", err)
+		}
+	}
+
+	metricsUser := os.Getenv("COMMBADGE_API_METRICS_USER")
+	metricsPassword := os.Getenv("COMMBADGE_API_METRICS_PASSWORD")
+	if (metricsUser == "") != (metricsPassword == "") {
+		return nil, fmt.Errorf("COMMBADGE_API_METRICS_USER and COMMBADGE_API_METRICS_PASSWORD must be set together")
+	}
+
 	var admins []string
 	if v := os.Getenv("COMMBADGE_API_ADMINS"); v != "" {
 		admins = strings.Split(v, ",")
@@ -105,6 +143,7 @@ func Load() (*Config, error) {
 		RedisURL:           os.Getenv("COMMBADGE_API_REDIS_URL"),
 		DiscordClientID:    os.Getenv("COMMBADGE_API_DISCORD_CLIENT_ID"),
 		DiscordSecret:      os.Getenv("COMMBADGE_API_DISCORD_CLIENT_SECRET"),
+		DiscordBotToken:    os.Getenv("COMMBADGE_API_DISCORD_BOT_TOKEN"),
 		DiscordBaseURL:     getenv("COMMBADGE_API_DISCORD_BASE_URL", "https://discord.com"),
 		TwitchClientID:     os.Getenv("COMMBADGE_API_TWITCH_CLIENT_ID"),
 		TwitchSecret:       os.Getenv("COMMBADGE_API_TWITCH_CLIENT_SECRET"),
@@ -118,6 +157,7 @@ func Load() (*Config, error) {
 		JWTSecret:          os.Getenv("COMMBADGE_API_JWT_SECRET"),
 		SessionTTL:         sessionTTL,
 		TLS:                os.Getenv("COMMBADGE_API_TLS") == "true",
+		CookieSecure:       cookieSecure,
 		TLSCert:            os.Getenv("COMMBADGE_API_CERT"),
 		TLSKey:             os.Getenv("COMMBADGE_API_KEY"),
 		S3Endpoint:         os.Getenv("COMMBADGE_API_S3_ENDPOINT"),
@@ -129,9 +169,12 @@ func Load() (*Config, error) {
 		CORSOrigins:        corsOrigins,
 		RateLimitRPS:       rps,
 		RateLimitBurst:     burst,
+		TrustedProxies:     trustedProxies,
 		MaintenanceFile:    maintFile,
 		MigrationMode:      migrationMode,
 		Admins:             admins,
+		MetricsUser:        metricsUser,
+		MetricsPassword:    metricsPassword,
 	}, nil
 }
 

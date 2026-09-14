@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const joinLinkAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789"
@@ -27,6 +26,9 @@ type Community struct {
 
 	DiscordGuildID string `json:"discord_guild_id,omitempty"`
 	LiveChannelID  string `json:"live_channel_id,omitempty"`
+
+	RotateJoinLinkOnRemoval bool `json:"rotate_join_link_on_removal"`
+	RotateJoinLinkOnLeave   bool `json:"rotate_join_link_on_leave"`
 }
 
 type CommunityMember struct {
@@ -38,10 +40,10 @@ type CommunityMember struct {
 }
 
 type CommunityStore struct {
-	pool *pgxpool.Pool
+	pool DBTX
 }
 
-func NewCommunityStore(pool *pgxpool.Pool) *CommunityStore {
+func NewCommunityStore(pool DBTX) *CommunityStore {
 	return &CommunityStore{pool: pool}
 }
 
@@ -65,10 +67,10 @@ func (s *CommunityStore) Create(ctx context.Context, name, description, ownerID 
 	row := s.pool.QueryRow(ctx, `
 		INSERT INTO communities (name, description, owner_id, join_link_id)
 		VALUES ($1, $2, $3, $4)
-		RETURNING id, name, description, owner_id, moderators, logo_url, join_link_id, created_at, updated_at
+		RETURNING id, name, description, owner_id, moderators, logo_url, join_link_id, created_at, updated_at, rotate_join_link_on_removal, rotate_join_link_on_leave
 	`, name, description, ownerID, joinID)
 	c := &Community{}
-	err = row.Scan(&c.ID, &c.Name, &c.Description, &c.OwnerID, &c.Moderators, &c.LogoURL, &c.JoinLinkID, &c.CreatedAt, &c.UpdatedAt)
+	err = row.Scan(&c.ID, &c.Name, &c.Description, &c.OwnerID, &c.Moderators, &c.LogoURL, &c.JoinLinkID, &c.CreatedAt, &c.UpdatedAt, &c.RotateJoinLinkOnRemoval, &c.RotateJoinLinkOnLeave)
 	if err != nil {
 		return nil, err
 	}
@@ -77,11 +79,30 @@ func (s *CommunityStore) Create(ctx context.Context, name, description, ownerID 
 
 func (s *CommunityStore) GetByID(ctx context.Context, id string) (*Community, error) {
 	row := s.pool.QueryRow(ctx, `
-		SELECT id, name, description, owner_id, moderators, logo_url, join_link_id, created_at, updated_at
+		SELECT id, name, description, owner_id, moderators, logo_url, join_link_id, created_at, updated_at, rotate_join_link_on_removal, rotate_join_link_on_leave
 		FROM communities WHERE id = $1
 	`, id)
 	c := &Community{}
-	err := row.Scan(&c.ID, &c.Name, &c.Description, &c.OwnerID, &c.Moderators, &c.LogoURL, &c.JoinLinkID, &c.CreatedAt, &c.UpdatedAt)
+	err := row.Scan(&c.ID, &c.Name, &c.Description, &c.OwnerID, &c.Moderators, &c.LogoURL, &c.JoinLinkID, &c.CreatedAt, &c.UpdatedAt, &c.RotateJoinLinkOnRemoval, &c.RotateJoinLinkOnLeave)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return c, nil
+}
+
+// GetByJoinLinkID resolves a community from its join link secret. The join
+// link is the community's capability token, so this lookup is only ever
+// exposed through the join-by-code endpoints, never through generic search.
+func (s *CommunityStore) GetByJoinLinkID(ctx context.Context, joinLinkID string) (*Community, error) {
+	row := s.pool.QueryRow(ctx, `
+		SELECT id, name, description, owner_id, moderators, logo_url, join_link_id, created_at, updated_at, rotate_join_link_on_removal, rotate_join_link_on_leave
+		FROM communities WHERE join_link_id = $1
+	`, joinLinkID)
+	c := &Community{}
+	err := row.Scan(&c.ID, &c.Name, &c.Description, &c.OwnerID, &c.Moderators, &c.LogoURL, &c.JoinLinkID, &c.CreatedAt, &c.UpdatedAt, &c.RotateJoinLinkOnRemoval, &c.RotateJoinLinkOnLeave)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -98,7 +119,7 @@ type CommunityWithRole struct {
 
 func (s *CommunityStore) ListByUserID(ctx context.Context, userID string) ([]CommunityWithRole, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT c.id, c.name, c.description, c.owner_id, c.moderators, c.logo_url, c.join_link_id, c.created_at, c.updated_at,
+		SELECT c.id, c.name, c.description, c.owner_id, c.moderators, c.logo_url, c.join_link_id, c.created_at, c.updated_at, c.rotate_join_link_on_removal, c.rotate_join_link_on_leave,
 		       cm.role
 		FROM communities c
 		JOIN community_members cm ON cm.community_id = c.id
@@ -113,7 +134,7 @@ func (s *CommunityStore) ListByUserID(ctx context.Context, userID string) ([]Com
 	var communities []CommunityWithRole
 	for rows.Next() {
 		var c CommunityWithRole
-		if err := rows.Scan(&c.ID, &c.Name, &c.Description, &c.OwnerID, &c.Moderators, &c.LogoURL, &c.JoinLinkID, &c.CreatedAt, &c.UpdatedAt, &c.Role); err != nil {
+		if err := rows.Scan(&c.ID, &c.Name, &c.Description, &c.OwnerID, &c.Moderators, &c.LogoURL, &c.JoinLinkID, &c.CreatedAt, &c.UpdatedAt, &c.RotateJoinLinkOnRemoval, &c.RotateJoinLinkOnLeave, &c.Role); err != nil {
 			return nil, err
 		}
 		communities = append(communities, c)
@@ -215,9 +236,18 @@ func (s *CommunityStore) UpdateLogoURL(ctx context.Context, id, url string) erro
 	return err
 }
 
+// UpdateJoinLinkSettings toggles whether the community's join link is rotated
+// when a member is removed or leaves.
+func (s *CommunityStore) UpdateJoinLinkSettings(ctx context.Context, id string, rotateOnRemoval, rotateOnLeave bool) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE communities SET rotate_join_link_on_removal = $1, rotate_join_link_on_leave = $2, updated_at = now() WHERE id = $3
+	`, rotateOnRemoval, rotateOnLeave, id)
+	return err
+}
+
 func (s *CommunityStore) AdminListAll(ctx context.Context, limit, offset int) ([]Community, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, name, description, owner_id, moderators, logo_url, join_link_id, created_at, updated_at
+		SELECT id, name, description, owner_id, moderators, logo_url, join_link_id, created_at, updated_at, rotate_join_link_on_removal, rotate_join_link_on_leave
 		FROM communities
 		ORDER BY created_at DESC
 		LIMIT $1 OFFSET $2
@@ -230,7 +260,7 @@ func (s *CommunityStore) AdminListAll(ctx context.Context, limit, offset int) ([
 	var communities []Community
 	for rows.Next() {
 		var c Community
-		if err := rows.Scan(&c.ID, &c.Name, &c.Description, &c.OwnerID, &c.Moderators, &c.LogoURL, &c.JoinLinkID, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.Name, &c.Description, &c.OwnerID, &c.Moderators, &c.LogoURL, &c.JoinLinkID, &c.CreatedAt, &c.UpdatedAt, &c.RotateJoinLinkOnRemoval, &c.RotateJoinLinkOnLeave); err != nil {
 			return nil, err
 		}
 		communities = append(communities, c)

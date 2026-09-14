@@ -16,6 +16,11 @@ type Session struct {
 	DisplayName string `json:"display_name"`
 	Email       string `json:"email"`
 	AvatarURL   string `json:"avatar_url"`
+
+	// DiscordAccessToken is the OAuth access token obtained at login. It is
+	// used to verify Discord channel permissions against the Discord API when
+	// notification targets are configured. It is never exposed to clients.
+	DiscordAccessToken string `json:"discord_access_token,omitempty"`
 }
 
 type Store struct {
@@ -66,20 +71,26 @@ func (s *Store) Delete(ctx context.Context, sessionID string) error {
 	return s.client.Del(ctx, "session:"+sessionID).Err()
 }
 
-func (s *Store) SetState(ctx context.Context, state string, ttl time.Duration) error {
-	return s.client.Set(ctx, "state:"+state, "1", ttl).Err()
+// SetState stores an OAuth CSRF state token under the given binding. The
+// binding identifies the party the state was issued for (e.g. a user id); the
+// callback must return it so the server can reject states used out of
+// context.
+func (s *Store) SetState(ctx context.Context, state, binding string, ttl time.Duration) error {
+	return s.client.Set(ctx, "state:"+state, binding, ttl).Err()
 }
 
-func (s *Store) VerifyState(ctx context.Context, state string) (bool, error) {
-	err := s.client.Get(ctx, "state:"+state).Err()
+// VerifyState atomically consumes a state token and returns the binding it
+// was stored with. The GETDEL is atomic, so a state can only be redeemed
+// once even under concurrent requests.
+func (s *Store) VerifyState(ctx context.Context, state string) (string, bool, error) {
+	binding, err := s.client.GetDel(ctx, "state:"+state).Result()
 	if err != nil {
 		if err == redis.Nil {
-			return false, nil
+			return "", false, nil
 		}
-		return false, err
+		return "", false, err
 	}
-	s.client.Del(ctx, "state:"+state)
-	return true, nil
+	return binding, true, nil
 }
 
 func (s *Store) Ping(ctx context.Context) error {

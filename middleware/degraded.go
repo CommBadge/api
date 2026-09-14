@@ -7,19 +7,18 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-	"kronus.dev/commbadge_api/session"
+	"kronus.dev/commbadge_api/handler/contracts"
 )
 
 type DegradedDetector struct {
-	pool      *pgxpool.Pool
-	sessions  *session.Store
+	pool      contracts.DBPinger
+	sessions  contracts.SessionPinger
 	maintFile string
 	degraded  atomic.Bool
 	halted    atomic.Bool
 }
 
-func NewDegradedDetector(pool *pgxpool.Pool, sessions *session.Store, maintFile string) *DegradedDetector {
+func NewDegradedDetector(pool contracts.DBPinger, sessions contracts.SessionPinger, maintFile string) *DegradedDetector {
 	d := &DegradedDetector{
 		pool:      pool,
 		sessions:  sessions,
@@ -50,19 +49,26 @@ func (d *DegradedDetector) poll() {
 		if d.halted.Load() {
 			return
 		}
+		d.detect()
+	}
+}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		dbOK := d.pool.Ping(ctx) == nil
-		redisOK := d.sessions.Ping(ctx) == nil
-		cancel()
+// detect runs a single health probe and updates the degraded flag. It is
+// extracted from poll so it can be exercised directly in tests without waiting
+// for the poll interval.
+func (d *DegradedDetector) detect() {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
-		_, maintFound := os.Stat(d.maintFile)
+	dbOK := d.pool.Ping(ctx) == nil
+	redisOK := d.sessions.Ping(ctx) == nil
 
-		if !dbOK || !redisOK || maintFound == nil {
-			d.degraded.Store(true)
-		} else {
-			d.degraded.Store(false)
-		}
+	_, maintFound := os.Stat(d.maintFile)
+
+	if !dbOK || !redisOK || maintFound == nil {
+		d.degraded.Store(true)
+	} else {
+		d.degraded.Store(false)
 	}
 }
 
@@ -70,7 +76,7 @@ func (d *DegradedDetector) Wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if d.degraded.Load() {
 			path := r.URL.Path
-			if path == "/healthz" || path == "/metrics" || path == "/" {
+			if path == "/healthz" || path == "/readyz" || path == "/metrics" || path == "/" {
 				next.ServeHTTP(w, r)
 				return
 			}

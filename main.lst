@@ -1,0 +1,251 @@
+FUNCTION main()
+    // Step 1: Parse command line flags
+    migrateOnly = flag.Bool("migrate", false, "apply pending database migrations and exit")
+    flag.Parse()
+
+    // Step 2: Load configuration from environment variables
+    cfg, err = config.Load()
+    IF err != nil THEN
+        LOG ERROR "config load failed"
+        EXIT(1)
+    END IF
+
+    // Step 3: Initialize structured JSON logger
+    SET DEFAULT LOGGER to JSON handler with INFO level
+
+    // Step 4: Validate TLS certificates if TLS is enabled
+    IF cfg.TLS is TRUE THEN
+        IF cert file does not exist THEN
+            LOG ERROR "TLS cert not found"
+            EXIT(1)
+        END IF
+        IF key file does not exist THEN
+            LOG ERROR "TLS key not found"
+            EXIT(1)
+        END IF
+    END IF
+
+    // Step 5: Create background context
+    ctx = context.Background()
+
+    // Step 6: Initialize PostgreSQL connection pool
+    pool, err = store.NewPool(ctx, cfg.DatabaseURL)
+    //   - Internally: creates pgxpool, pings database
+    IF err != nil THEN
+        LOG ERROR "database pool init failed"
+        EXIT(1)
+    END IF
+    DEFER pool.Close()
+
+    // Step 7: Handle database migrations based on mode
+    SWITCH cfg.MigrationMode:
+        CASE "validate":
+            // Only validate schema matches binary version
+            err = migrations.Validate(ctx, cfg.DatabaseURL)
+            //   - Internally: opens DB, creates goose provider,
+            //     checks for pending migrations, compares versions
+            IF err != nil THEN
+                LOG ERROR "schema validation failed"
+                EXIT(1)
+            END IF
+            LOG INFO "schema validated"
+
+        CASE "skip":
+            // Do nothing - leave schema untouched
+            BREAK
+
+        DEFAULT ("auto"):
+            // Apply any pending migrations
+            version, applied, err = migrations.Apply(ctx, cfg.DatabaseURL)
+            //   - Internally: opens DB, creates goose provider,
+            //     runs pending migrations, returns version and count
+            IF err != nil THEN
+                LOG ERROR "migration failed"
+                EXIT(1)
+            END IF
+            LOG INFO "migrations applied" with version and count
+    END SWITCH
+
+    // Step 8: If migrate-only flag was set, exit after migrations
+    IF migrateOnly is TRUE THEN
+        LOG INFO "migration run complete"
+        EXIT(0)
+    END IF
+
+    // Step 9: Initialize Redis session store
+    sessions, err = session.NewStore(cfg.RedisURL, cfg.SessionTTL)
+    //   - Internally: parses Redis URL, creates client, pings Redis
+    IF err != nil THEN
+        LOG ERROR "redis init failed"
+        EXIT(1)
+    END IF
+    DEFER sessions.Close()
+
+    // Step 10: Initialize S3 client (if configured)
+    var s3 handler.S3Repository
+    IF cfg.S3Endpoint is not empty THEN
+        s3Client, err = store.NewS3Client(cfg.S3Endpoint, cfg.S3AccessKey,
+                                          cfg.S3SecretKey, cfg.S3Bucket,
+                                          cfg.S3Region, cfg.S3UseSSL)
+        //   - Internally: creates MinIO client with credentials
+        IF err != nil THEN
+            LOG ERROR "s3 init failed"
+            EXIT(1)
+        END IF
+
+        // Verify bucket exists
+        err = s3Client.BucketExists(ctx)
+        IF err != nil THEN
+            LOG ERROR "s3 bucket check failed"
+            EXIT(1)
+        END IF
+
+        s3 = s3Client
+    END IF
+
+    // Step 11: Initialize JWT signer/verifier
+    j = jwt.New(cfg.JWTSecret, cfg.SessionTTL)
+    //   - Stores secret and duration for HS256 signing
+
+    // Step 12: Initialize admin store and seed initial admins
+    adminStore = store.NewAdminStore(pool)
+    IF cfg.Admins has entries THEN
+        err = adminStore.SeedAdmins(ctx, cfg.Admins)
+        //   - Internally: for each admin ID:
+        //     BEGIN transaction
+        //     INSERT into users (creates stub user if not exists)
+        //     INSERT into platform_admins (creates admin record)
+        //     COMMIT transaction
+        IF err != nil THEN
+            LOG ERROR "admin seeding failed"
+            EXIT(1)
+        END IF
+        LOG INFO "admins seeded" with count
+    END IF
+
+    // Step 13: Create Discord OAuth client
+    discordClient = discord.NewClient({
+        ClientID:     cfg.DiscordClientID,
+        ClientSecret: cfg.DiscordSecret,
+        RedirectURL:  cfg.RedirectURL,
+        BaseURL:      cfg.DiscordBaseURL
+    })
+    //   - Creates HTTP client with 10s timeout
+
+    // Step 14: Create Twitch OAuth client
+    twitchClient = twitch.NewClient({
+        ClientID:     cfg.TwitchClientID,
+        ClientSecret: cfg.TwitchSecret,
+        RedirectURL:  cfg.TwitchRedirectURL,
+        OAuthURL:     cfg.TwitchOAuthBaseURL,
+        HelixURL:     cfg.TwitchHelixBaseURL
+    })
+    //   - Creates HTTP client with 10s timeout, initializes JWKS cache
+
+    // Step 15: Build HTTP handler with all dependencies
+    handler = app.Build(app.Deps{
+        Cfg:      cfg,
+        DB:       pool,
+        Sessions: sessions,
+        JWT:      j,
+        Discord:  discordClient,
+        Twitch:   twitchClient,
+        S3:       s3
+    })
+    //   - Internally (see app.Build):
+    //     A. Create data stores:
+    //        - userStore, communityStore, adminStore
+    //        - ticketStore, notificationStore
+    //
+    //     B. Create handlers:
+    //        - AuthHandler (Discord/Twitch OAuth, sessions, JWT)
+    //        - WhoamiHandler (current user info)
+    //        - CommunityHandler (CRUD, join, moderate, S3 upload)
+    //        - SettingsHandler (user/community settings)
+    //        - NotificationHandler (Twitch EventSub subscriptions)
+    //        - HealthHandler (healthz, readyz, maintenance)
+    //        - TicketHandler (support tickets)
+    //        - AdminHandler (admin operations)
+    //
+    //     C. Create middleware:
+    //        - AuthMiddleware (JWT verification, session check)
+    //        - Body size limiter (1KB JSON, 2.5MB uploads)
+    //        - CORS handler
+    //        - Rate limiter
+    //        - Degraded mode detector
+    //
+    //     D. Register routes on mux:
+    //        Root routes:
+    //          GET  /auth/login           -> Login
+    //          POST /auth/logout          -> Logout (auth required)
+    //          GET  /auth/callback        -> OAuth callback
+    //          GET  /auth/twitch/link     -> Link Twitch (auth required)
+    //          GET  /auth/twitch/callback -> Twitch callback (auth required)
+    //          POST /auth/twitch/unlink   -> Unlink Twitch (auth required)
+    //          GET  /auth/whoami          -> Current user (auth, not banned)
+    //          GET  /healthz              -> Health check
+    //          GET  /readyz               -> Readiness check
+    //          GET  /metrics              -> Prometheus metrics (basic auth)
+    //          GET  /                     -> Hello World
+    //
+    //        API routes (auth required, not banned, JSON body):
+    //          /api/communities/*         -> Community CRUD
+    //          /api/communities/join/*    -> Join by code
+    //          /api/me/*                 -> User settings
+    //          /api/notifications/*      -> Notification subscriptions
+    //          /api/tickets/*            -> Support tickets
+    //
+    //        Upload routes (auth required, not banned, 2.5MB limit):
+    //          /api/upload/*             -> File uploads (logo)
+    //
+    //        Admin routes (admin required, not banned, JSON body):
+    //          /api/admin/*              -> Admin operations
+    //
+    //     E. Apply middleware chain (outermost first):
+    //        CORS -> Degraded detector -> Rate limiter -> Logging -> Mux
+
+    // Step 16: Create HTTP server with timeouts
+    srv = &http.Server{
+        Addr:         ":" + cfg.Port,
+        Handler:      handler,
+        ReadTimeout:  15 seconds,
+        WriteTimeout: 30 seconds,
+        IdleTimeout:  60 seconds
+    }
+
+    // Step 17: Set up signal channel for graceful shutdown
+    stop = make(chan os.Signal, 1)
+    signal.Notify(stop, SIGINT, SIGTERM)
+
+    // Step 18: Start HTTP server in goroutine
+    GOFUNC():
+        LOG INFO "listening" with address
+        IF cfg.TLS is TRUE THEN
+            err = srv.ListenAndServeTLS(cfg.TLSCert, cfg.TLSKey)
+        ELSE
+            err = srv.ListenAndServe()
+        END IF
+        IF err != nil AND err != http.ErrServerClosed THEN
+            LOG ERROR "server error"
+            EXIT(1)
+        END IF
+
+    // Step 19: Wait for shutdown signal (blocks here)
+    WAIT FOR <-stop
+
+    // Step 20: Graceful shutdown
+    LOG INFO "shutting down..."
+    shutdownCtx, cancel = context.WithTimeout(context.Background(), 15 seconds)
+    DEFER cancel()
+
+    err = srv.Shutdown(shutdownCtx)
+    IF err != nil THEN
+        LOG ERROR "shutdown error"
+        EXIT(1)
+    END IF
+    LOG INFO "server stopped"
+
+    // Deferred cleanup executes in reverse order:
+    //   - sessions.Close() (Redis connection)
+    //   - pool.Close() (PostgreSQL connection pool)
+END FUNCTION

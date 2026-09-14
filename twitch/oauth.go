@@ -46,6 +46,8 @@ type Client struct {
 	mu              sync.Mutex
 	appToken        string
 	appTokenExpires time.Time
+
+	jwks *jwksCache
 }
 
 func NewClient(cfg *Config) *Client {
@@ -55,25 +57,33 @@ func NewClient(cfg *Config) *Client {
 	if cfg.HelixURL == "" {
 		cfg.HelixURL = "https://api.twitch.tv"
 	}
-	return &Client{cfg: cfg, httpCli: &http.Client{Timeout: 10 * time.Second}}
+	return &Client{cfg: cfg, httpCli: &http.Client{Timeout: 10 * time.Second}, jwks: &jwksCache{}}
 }
 
-func (c *Client) AuthURL(state string) string {
+func (c *Client) AuthURL(state, codeChallenge string) string {
 	v := url.Values{}
 	v.Set("client_id", c.cfg.ClientID)
 	v.Set("redirect_uri", c.cfg.RedirectURL)
 	v.Set("response_type", "code")
 	v.Set("scope", "openid user:read:email")
 	v.Set("state", state)
+	// The nonce is echoed back inside the OIDC ID token; the API verifies it
+	// after exchange to bind the token to this login attempt (replay
+	// protection).
 	v.Set("nonce", state)
+	// PKCE (RFC 7636): S256 challenge bound to the authorization request; the
+	// verifier is sent with the token exchange.
+	v.Set("code_challenge", codeChallenge)
+	v.Set("code_challenge_method", "S256")
 	return c.cfg.OAuthURL + "/oauth2/authorize?" + v.Encode()
 }
 
-func (c *Client) Exchange(ctx context.Context, code string) (*TokenResponse, error) {
+func (c *Client) Exchange(ctx context.Context, code, verifier string) (*TokenResponse, error) {
 	v := url.Values{}
 	v.Set("client_id", c.cfg.ClientID)
 	v.Set("client_secret", c.cfg.ClientSecret)
 	v.Set("code", code)
+	v.Set("code_verifier", verifier)
 	v.Set("grant_type", "authorization_code")
 	v.Set("redirect_uri", c.cfg.RedirectURL)
 

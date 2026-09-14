@@ -72,20 +72,23 @@ func TestSessionStore_StateLifecycle(t *testing.T) {
 	ctx := context.Background()
 	s := newSessionStore(t, time.Hour)
 
-	if err := s.SetState(ctx, "state-1", 5*time.Minute); err != nil {
+	if err := s.SetState(ctx, "state-1", "user-1", 5*time.Minute); err != nil {
 		t.Fatalf("SetState: %v", err)
 	}
 
-	valid, err := s.VerifyState(ctx, "state-1")
+	binding, valid, err := s.VerifyState(ctx, "state-1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !valid {
 		t.Fatal("expected state to verify")
 	}
+	if binding != "user-1" {
+		t.Fatalf("expected binding user-1, got %q", binding)
+	}
 
 	// State is single-use: second verification must fail.
-	valid, err = s.VerifyState(ctx, "state-1")
+	_, valid, err = s.VerifyState(ctx, "state-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +102,7 @@ func TestSessionStore_StateMissing(t *testing.T) {
 	ctx := context.Background()
 	s := newSessionStore(t, time.Hour)
 
-	valid, err := s.VerifyState(ctx, "never-set")
+	_, valid, err := s.VerifyState(ctx, "never-set")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,12 +116,12 @@ func TestSessionStore_StateExpiry(t *testing.T) {
 	ctx := context.Background()
 	s := newSessionStore(t, time.Hour)
 
-	if err := s.SetState(ctx, "short-state", 50*time.Millisecond); err != nil {
+	if err := s.SetState(ctx, "short-state", "", 50*time.Millisecond); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(150 * time.Millisecond)
 
-	valid, err := s.VerifyState(ctx, "short-state")
+	_, valid, err := s.VerifyState(ctx, "short-state")
 	if err != nil {
 		t.Fatal(err)
 	}

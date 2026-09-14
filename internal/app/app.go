@@ -8,16 +8,28 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"kronus.dev/commbadge_api/config"
-	"kronus.dev/commbadge_api/handler"
+	"kronus.dev/commbadge_api/handler/admin"
+	"kronus.dev/commbadge_api/handler/auth"
+	"kronus.dev/commbadge_api/handler/community"
+	"kronus.dev/commbadge_api/handler/contracts"
+	"kronus.dev/commbadge_api/handler/health"
+	"kronus.dev/commbadge_api/handler/notifications"
+	"kronus.dev/commbadge_api/handler/settings"
+	"kronus.dev/commbadge_api/handler/tickets"
+	"kronus.dev/commbadge_api/handler/whoami"
 	"kronus.dev/commbadge_api/jwt"
 	"kronus.dev/commbadge_api/middleware"
 	"kronus.dev/commbadge_api/session"
 	"kronus.dev/commbadge_api/store"
 )
 
+// TwitchProvider is the union of the Twitch OAuth/identity surface and the
+// EventSub subscription surface. The production client and the test mock both
+// implement all of it, so a single value is shared by the auth module (OAuth)
+// and the notifications/auth modules (EventSub).
 type TwitchProvider interface {
-	handler.TwitchClient
-	handler.TwitchEventSubClient
+	contracts.TwitchClient
+	contracts.TwitchEventSubClient
 }
 
 type Deps struct {
@@ -25,9 +37,9 @@ type Deps struct {
 	DB       *pgxpool.Pool
 	Sessions *session.Store
 	JWT      *jwt.JWT
-	Discord  handler.DiscordClient
+	Discord  contracts.DiscordClient
 	Twitch   TwitchProvider
-	S3       handler.S3Repository
+	S3       contracts.S3Repository
 }
 
 // Build wires stores, handlers, middleware, and routes into a single
@@ -40,7 +52,7 @@ func Build(deps Deps) http.Handler {
 	ticketStore := store.NewTicketStore(deps.DB)
 	notificationStore := store.NewNotificationStore(deps.DB)
 
-	authHandler := &handler.AuthHandler{
+	authHandler := auth.GetHandlers(auth.Deps{
 		Discord:       deps.Discord,
 		Twitch:        deps.Twitch,
 		EventSub:      deps.Twitch,
@@ -50,51 +62,56 @@ func Build(deps Deps) http.Handler {
 		FrontendURL:   deps.Cfg.FrontendURL,
 		RedirectURL:   deps.Cfg.RedirectURL,
 		SessionTTL:    deps.Cfg.SessionTTL,
-		IsTLS:         deps.Cfg.TLS,
+		SecureCookies: deps.Cfg.TLS || deps.Cfg.CookieSecure,
 		SignJWT:       deps.JWT.Sign,
 		VerifyJWT:     deps.JWT.Verify,
-	}
+	})
 
-	whoamiHandler := &handler.WhoamiHandler{
+	whoamiHandler := whoami.GetHandlers(whoami.Deps{
 		Users:       userStore,
 		Communities: communityStore,
-	}
+	})
 
-	communityHandler := &handler.CommunityHandler{
+	communityHandler := community.GetHandlers(community.Deps{
 		Communities: communityStore,
 		S3:          deps.S3,
-	}
+	})
 
-	settingsHandler := &handler.SettingsHandler{
-		Users:       userStore,
-		Communities: communityStore,
-	}
+	settingsHandler := settings.GetHandlers(settings.Deps{
+		Users:           userStore,
+		Communities:     communityStore,
+		Discord:         deps.Discord,
+		DiscordBotToken: deps.Cfg.DiscordBotToken,
+		Sessions:        deps.Sessions,
+	})
 
-	notificationHandler := &handler.NotificationHandler{
+	notificationHandler := notifications.GetHandlers(notifications.Deps{
 		Users:       userStore,
 		Subs:        notificationStore,
 		EventSub:    deps.Twitch,
 		CallbackURL: deps.Cfg.EventSubCallback,
 		Secret:      deps.Cfg.EventSubSecret,
-	}
+	})
 
-	healthHandler := &handler.HealthHandler{
+	healthHandler := health.GetHandlers(health.Deps{
 		DB:        deps.DB,
 		Sessions:  deps.Sessions,
 		S3:        deps.S3,
 		MaintFile: deps.Cfg.MaintenanceFile,
-	}
+	})
 
-	ticketHandler := &handler.TicketHandler{
+	ticketHandler := tickets.GetHandlers(tickets.Deps{
 		Tickets: ticketStore,
-	}
+	})
 
-	adminHandler := &handler.AdminHandler{
+	// DegradedDetector stays nil in production: enabling maintenance is purely
+	// an admin action here, while the app-level detector owns the actual halt.
+	adminHandler := admin.GetHandlers(admin.Deps{
 		AdminStore:     adminStore,
 		CommunityStore: communityStore,
 		TicketStore:    ticketStore,
 		UserStore:      userStore,
-	}
+	})
 
 	authMW := &middleware.AuthMiddleware{
 		VerifyJWT: deps.JWT.Verify,
@@ -109,62 +126,39 @@ func Build(deps Deps) http.Handler {
 	uploadBody := middleware.LimitBodySize(2_500_000)
 
 	corsMW := middleware.NewCORS(deps.Cfg.CORSOrigins)
-	rateLimiter := middleware.NewRateLimiter(deps.Cfg.RateLimitRPS, deps.Cfg.RateLimitBurst)
+	rateLimiter := middleware.NewRateLimiter(deps.Cfg.RateLimitRPS, deps.Cfg.RateLimitBurst, deps.Cfg.TrustedProxies)
 	degradedDetector := middleware.NewDegradedDetector(deps.DB, deps.Sessions, deps.Cfg.MaintenanceFile)
 
 	apiMux := http.NewServeMux()
-	apiMux.HandleFunc("GET /communities", communityHandler.ListUserCommunities)
-	apiMux.HandleFunc("POST /communities", communityHandler.CreateCommunity)
-	apiMux.HandleFunc("GET /communities/{communityID}", communityHandler.GetCommunity)
-	apiMux.HandleFunc("PUT /communities/{communityID}", communityHandler.UpdateCommunity)
-	apiMux.HandleFunc("DELETE /communities/{communityID}", communityHandler.DeleteCommunity)
-	apiMux.HandleFunc("POST /communities/{communityID}/join", communityHandler.JoinCommunity)
-	apiMux.HandleFunc("POST /communities/{communityID}/moderate", communityHandler.ModerateCommunity)
-	apiMux.HandleFunc("POST /communities/{communityID}/leave", communityHandler.LeaveCommunity)
-	apiMux.HandleFunc("PUT /communities/{communityID}/join-link", communityHandler.RegenerateJoinLink)
-	apiMux.HandleFunc("PATCH /communities/{communityID}/discord", settingsHandler.SetCommunityDiscord)
-	apiMux.HandleFunc("PATCH /me/discord-notification", settingsHandler.SetNotificationChannel)
-	apiMux.HandleFunc("PATCH /me/shoutout-template", settingsHandler.SetShoutoutTemplate)
+	communityHandler.RegisterAPI(apiMux)
+	settingsHandler.RegisterAPI(apiMux)
 
 	uploadMux := http.NewServeMux()
-	uploadMux.HandleFunc("POST /logo/{communityID}", communityHandler.UploadLogo)
+	communityHandler.RegisterUpload(uploadMux)
 
 	ticketMux := http.NewServeMux()
-	ticketMux.HandleFunc("POST /tickets", ticketHandler.Create)
-	ticketMux.HandleFunc("GET /tickets", ticketHandler.List)
-	ticketMux.HandleFunc("GET /tickets/{ticketID}", ticketHandler.Get)
-	ticketMux.HandleFunc("POST /tickets/{ticketID}/messages", ticketHandler.AddMessage)
+	ticketHandler.Register(ticketMux)
 
 	adminMux := http.NewServeMux()
-	adminMux.HandleFunc("GET /admin/communities", adminHandler.ListCommunities)
-	adminMux.HandleFunc("DELETE /admin/communities/{communityID}", adminHandler.DisbandCommunity)
-	adminMux.HandleFunc("POST /admin/maintenance", adminHandler.SetMaintenance)
-	adminMux.HandleFunc("GET /admin/tickets/count", adminHandler.TicketCount)
-	adminMux.HandleFunc("GET /admin/tickets", adminHandler.ListTickets)
-	adminMux.HandleFunc("GET /admin/tickets/{ticketID}", adminHandler.GetTicket)
-	adminMux.HandleFunc("POST /admin/tickets/{ticketID}/reply", adminHandler.ReplyTicket)
-	adminMux.HandleFunc("PATCH /admin/tickets/{ticketID}/status", adminHandler.UpdateTicketStatus)
-	adminMux.HandleFunc("GET /admin/users", adminHandler.ListUsers)
-	adminMux.HandleFunc("GET /admin/users/search", adminHandler.SearchUsers)
-	adminMux.HandleFunc("GET /admin/users/{userID}/warnings", adminHandler.GetUserWarnings)
-	adminMux.HandleFunc("POST /admin/users/{userID}/warn", adminHandler.WarnUser)
-	adminMux.HandleFunc("POST /admin/users/{userID}/ban", adminHandler.BanUser)
-	adminMux.HandleFunc("POST /admin/users/{userID}/unban", adminHandler.UnbanUser)
+	adminHandler.Register(adminMux)
+
+	notifMux := http.NewServeMux()
+	notificationHandler.Register(notifMux)
 
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("GET /auth/login", authHandler.Login)
-	mux.Handle("POST /auth/logout", jsonBody(http.HandlerFunc(authHandler.Logout)))
-	mux.HandleFunc("GET /auth/callback", authHandler.Callback)
+	authHandler.Routes(mux, auth.Middlewares{
+		Auth: apiAuth,
+		Body: jsonBody,
+	})
 
-	mux.Handle("GET /auth/twitch/link", apiAuth(http.HandlerFunc(authHandler.TwitchLink)))
-	mux.Handle("GET /auth/twitch/callback", apiAuth(http.HandlerFunc(authHandler.TwitchCallback)))
-	mux.Handle("POST /auth/twitch/unlink", apiAuth(http.HandlerFunc(authHandler.TwitchUnlink)))
+	// The whoami route is only served to authenticated, non-banned users.
+	whoamiAuth := func(h http.Handler) http.Handler {
+		return middleware.NewChain(apiAuth, apiNotBanned).Then(h)
+	}
+	whoamiHandler.Routes(mux, whoamiAuth)
 
-	mux.Handle("GET /auth/whoami", middleware.NewChain(
-		apiAuth,
-		apiNotBanned,
-	).Then(http.HandlerFunc(whoamiHandler.Whoami)))
+	healthHandler.Register(mux)
 
 	mux.Handle("/api/", middleware.NewChain(
 		apiAuth,
@@ -192,20 +186,21 @@ func Build(deps Deps) http.Handler {
 		jsonBody,
 	).Then(http.StripPrefix("/api", adminMux)))
 
-	notifMux := http.NewServeMux()
-	notifMux.HandleFunc("POST /subscriptions", notificationHandler.Subscribe)
-	notifMux.HandleFunc("GET /subscriptions", notificationHandler.List)
-	notifMux.HandleFunc("DELETE /subscriptions/{id}", notificationHandler.Delete)
-
 	mux.Handle("/api/notifications/", middleware.NewChain(
 		apiAuth,
 		apiNotBanned,
 		jsonBody,
 	).Then(http.StripPrefix("/api/notifications", notifMux)))
 
-	mux.HandleFunc("GET /healthz", healthHandler.Healthz)
-
-	mux.Handle("GET /metrics", promhttp.Handler())
+	// /metrics discloses runtime internals, so it is only served when explicit
+	// credentials are configured, and always behind Basic authentication.
+	if deps.Cfg.MetricsUser != "" && deps.Cfg.MetricsPassword != "" {
+		mux.Handle("GET /metrics", middleware.BasicAuth(deps.Cfg.MetricsUser, deps.Cfg.MetricsPassword, promhttp.Handler()))
+	} else {
+		mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
+			http.NotFound(w, r)
+		})
+	}
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "Hello World! %s", time.Now())

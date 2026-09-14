@@ -15,18 +15,30 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/mock"
+
 	"kronus.dev/commbadge_api/config"
 	"kronus.dev/commbadge_api/discord"
+	mockcontracts "kronus.dev/commbadge_api/handler/contracts/mocks"
 	"kronus.dev/commbadge_api/internal/app"
-	"kronus.dev/commbadge_api/internal/testutil"
 	"kronus.dev/commbadge_api/jwt"
 	"kronus.dev/commbadge_api/store"
+	"kronus.dev/commbadge_api/twitch"
 )
 
+// twitchProvider merges the OAuth/identity and EventSub mock surfaces into the
+// single value app.Deps.Twitch expects.
+type twitchProvider struct {
+	*mockcontracts.MockTwitchClient
+	*mockcontracts.MockTwitchEventSubClient
+}
+
 type testServer struct {
-	ts      *httptest.Server
-	discord *testutil.MockDiscordClient
-	twitch  *testutil.MockTwitchClient
+	ts          *httptest.Server
+	discord     *mockcontracts.MockDiscordClient
+	twitch      *mockcontracts.MockTwitchClient
+	eventSub    *mockcontracts.MockTwitchEventSubClient
+	currentUser *discord.User
 }
 
 func newTestServer(t *testing.T) *testServer {
@@ -39,6 +51,7 @@ func newTestServer(t *testing.T) *testServer {
 		RedisURL:          redisURL,
 		DiscordClientID:   "discord-client",
 		DiscordSecret:     "discord-secret",
+		DiscordBotToken:   "mock-bot-token",
 		TwitchClientID:    "twitch-client",
 		TwitchSecret:      "twitch-secret",
 		TwitchRedirectURL: "http://api.test/auth/twitch/callback",
@@ -55,10 +68,28 @@ func newTestServer(t *testing.T) *testServer {
 	}
 
 	sessions := newSessionStore(t, cfg.SessionTTL)
-	discordClient := testutil.NewMockDiscordClient()
-	twitchClient := testutil.NewMockTwitchClient()
-	s3 := testutil.NewMockS3Client()
+	discordClient := mockcontracts.NewMockDiscordClient(t)
+	twitchClient := mockcontracts.NewMockTwitchClient(t)
+	eventSub := mockcontracts.NewMockTwitchEventSubClient(t)
+	s3 := mockcontracts.NewMockS3Repository(t)
+
+	s := &testServer{
+		discord:  discordClient,
+		twitch:   twitchClient,
+		eventSub: eventSub,
+		currentUser: &discord.User{
+			ID:         "user-1",
+			Username:   "testuser",
+			GlobalName: "TestUser",
+			Email:      "test@example.com",
+			Avatar:     "avatarhash",
+		},
+	}
+
+	registerMockExpectations(discordClient, twitchClient, eventSub, s3, s)
+
 	signer := jwt.New(cfg.JWTSecret, cfg.SessionTTL)
+	provider := &twitchProvider{MockTwitchClient: twitchClient, MockTwitchEventSubClient: eventSub}
 
 	h := app.Build(app.Deps{
 		Cfg:      cfg,
@@ -66,15 +97,64 @@ func newTestServer(t *testing.T) *testServer {
 		Sessions: sessions,
 		JWT:      signer,
 		Discord:  discordClient,
-		Twitch:   twitchClient,
+		Twitch:   provider,
 		S3:       s3,
 	})
 
 	ts := httptest.NewServer(h)
+	s.ts = ts
 	t.Cleanup(ts.Close)
 	t.Cleanup(func() { truncateAll(t) })
 
-	return &testServer{ts: ts, discord: discordClient, twitch: twitchClient}
+	return s
+}
+
+// registerMockExpectations sets up the default provider responses used by the
+// full-stack flows. The Discord/Twitch OAuth surface returns URLs that echo
+// the caller-supplied state back, and identity lookups report
+// testServer.currentUser.
+func registerMockExpectations(discordClient *mockcontracts.MockDiscordClient, twitchClient *mockcontracts.MockTwitchClient, eventSub *mockcontracts.MockTwitchEventSubClient, s3 *mockcontracts.MockS3Repository, s *testServer) {
+	discordClient.On("AuthURL", mock.Anything, mock.Anything).Return(
+		func(state, _ string) string {
+			return "https://discord.com/oauth2/authorize?mock=1&state=" + state
+		},
+	).Maybe()
+
+	discordClient.On("Exchange", mock.Anything, mock.Anything, mock.Anything).Return(
+		&discord.TokenResponse{AccessToken: "mock-access"}, nil,
+	).Maybe()
+	discordClient.On("GetUser", mock.Anything, mock.Anything).Return(
+		func(context.Context, string) *discord.User {
+			return s.currentUser
+		}, nil,
+	).Maybe()
+
+	twitchClient.On("AuthURL", mock.Anything, mock.Anything).Return(
+		func(state, _ string) string {
+			return "https://id.twitch.tv/oauth2/authorize?mock=1&state=" + state
+		},
+	).Maybe()
+	twitchClient.On("Exchange", mock.Anything, mock.Anything, mock.Anything).Return(
+		&twitch.TokenResponse{AccessToken: "mock-access"}, nil,
+	).Maybe()
+	twitchClient.On("VerifyIDToken", mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
+	twitchClient.On("GetUser", mock.Anything, mock.Anything).Return(
+		&twitch.TwitchUser{ID: "twitch-user-1", Login: "teststreamer", DisplayName: "TestStreamer", Email: "streamer@example.com"}, nil,
+	).Maybe()
+
+	eventSub.On("GetAppAccessToken", mock.Anything).Return("mock-app-token", nil).Maybe()
+	eventSub.On("CreateSubscription", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		&twitch.EventSubSubscription{
+			ID:        "eventsub-1",
+			Status:    "webhook_callback_verification_pending",
+			Type:      "stream.online",
+			Version:   "1",
+			Condition: map[string]string{"broadcaster_user_id": "twitch-user-1"},
+		}, nil,
+	).Maybe()
+	eventSub.On("DeleteSubscription", mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
+
+	s3.On("BucketExists", mock.Anything).Return(nil).Maybe()
 }
 
 func newClient(t *testing.T) *http.Client {
@@ -158,7 +238,7 @@ func (s *testServer) login(t *testing.T) *http.Client {
 
 func (s *testServer) loginAs(t *testing.T, user *discord.User) *http.Client {
 	t.Helper()
-	s.discord.GetUserResult = user
+	s.currentUser = user
 	return s.login(t)
 }
 
@@ -317,9 +397,7 @@ func TestHTTP_TwitchLinkAndNotifications(t *testing.T) {
 	if sub.ID == "" || sub.TwitchSubscriptionID != "eventsub-1" {
 		t.Fatalf("unexpected subscription: %+v", sub)
 	}
-	if s.twitch.CreateSubCallCount != 1 {
-		t.Fatalf("expected 1 eventsub create, got %d", s.twitch.CreateSubCallCount)
-	}
+	s.eventSub.AssertNumberOfCalls(t, "CreateSubscription", 1)
 
 	// Duplicate subscribe is rejected.
 	resp = s.post(t, client, "/api/notifications/subscriptions", `{"event_type":"stream.online"}`)
@@ -345,9 +423,7 @@ func TestHTTP_TwitchLinkAndNotifications(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 deleting, got %d: %s", resp.StatusCode, readBody(resp))
 	}
-	if s.twitch.DeleteSubCallCount != 1 {
-		t.Fatalf("expected 1 eventsub delete, got %d", s.twitch.DeleteSubCallCount)
-	}
+	s.eventSub.AssertNumberOfCalls(t, "DeleteSubscription", 1)
 
 	// Unlink twitch account.
 	resp = s.post(t, client, "/auth/twitch/unlink", "")

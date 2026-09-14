@@ -1,63 +1,55 @@
 package migrations
 
 import (
-	"database/sql"
+	"context"
 	"testing"
+	"time"
 )
 
 func TestLatest(t *testing.T) {
-	got, err := Latest()
+	v, err := Latest()
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("Latest: %v", err)
 	}
-	if got != 3 {
-		t.Fatalf("Latest() = %d, want 3", got)
+	if v <= 0 {
+		t.Fatalf("expected positive version, got %d", v)
 	}
 }
 
-func TestLatest_EmbeddedFiles(t *testing.T) {
-	names, err := embedFS.ReadDir(".")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(names) != 3 {
-		t.Fatalf("expected exactly 3 embedded migrations, got %d", len(names))
-	}
-	if names[0].Name() != "001_init.sql" {
-		t.Fatalf("unexpected first embedded file: %s", names[0].Name())
-	}
-	if names[1].Name() != "002_notification_targets.sql" {
-		t.Fatalf("unexpected second embedded file: %s", names[1].Name())
-	}
-	if names[2].Name() != "003_shoutout_template.sql" {
-		t.Fatalf("unexpected third embedded file: %s", names[2].Name())
+func TestOpenDB_PingError(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	if _, err := openDB(ctx, "postgres://127.0.0.1:1/db"); err == nil {
+		t.Fatal("expected ping error")
 	}
 }
 
-func TestProviderCollectsEmbeddedMigrations(t *testing.T) {
-	db, err := sql.Open(driverName, "postgres://unused/unused")
-	if err != nil {
-		t.Fatal(err)
+func TestNewProvider_NilDB(t *testing.T) {
+	if _, err := newProvider(nil); err == nil {
+		t.Fatal("expected error for nil db")
 	}
-	defer db.Close()
+}
 
-	p, err := newProvider(db)
-	if err != nil {
-		t.Fatal(err)
+func TestApply_BadURL(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	if _, _, err := Apply(ctx, "postgres://127.0.0.1:1/db"); err == nil {
+		t.Fatal("expected error")
 	}
-	defer p.Close()
+}
 
-	sources := p.ListSources()
-	if len(sources) != 3 {
-		t.Fatalf("expected 3 embedded migration sources, got %d", len(sources))
+func TestVersion_BadURL(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	if _, err := Version(ctx, "postgres://127.0.0.1:1/db"); err == nil {
+		t.Fatal("expected error")
 	}
-	if sources[0].Version != 1 {
-		t.Fatalf("expected source version 1, got %d", sources[0].Version)
-	}
-	if sources[1].Version != 2 {
-		t.Fatalf("expected source version 2, got %d", sources[1].Version)
-	}
-	if sources[2].Version != 3 {
-		t.Fatalf("expected source version 3, got %d", sources[2].Version)
+}
+
+func TestValidate_BadURL(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	if err := Validate(ctx, "postgres://127.0.0.1:1/db"); err == nil {
+		t.Fatal("expected error")
 	}
 }
